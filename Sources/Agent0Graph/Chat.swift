@@ -25,17 +25,27 @@ final class DevelopmentalPartner: Partner {
         "this","in","on","for","with","are","was","be","do","so","if","as","at","we"
     ]
 
+    init() {
+        if let s = Persist.load(PartnerSnap.self, "partner.json") { lexicon = s.lexicon; exchanges = s.exchanges }
+    }
+
+    private func save() { Persist.save(PartnerSnap(lexicon: lexicon, exchanges: exchanges), "partner.json") }
+
     func respond(to text: String, history: [ChatMessage]) async -> String {
         exchanges += 1
         let words = text.lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { $0.count > 1 }
         for w in words { lexicon[w, default: 0] += 1 }
+        let reply = utter(words: words)
+        save()
+        return reply
+    }
 
+    private func utter(words: [String]) -> String {
         let content = words.filter { !stop.contains($0) }
         let salient = content.last ?? words.last
         let vocab = lexicon.filter { !stop.contains($0.key) }
-
         switch exchanges {
         case 1...2:                                   // newborn — attends, no words
             return ["·  ·  ·", "…?", "( it stirs )", "…"][exchanges % 4]
@@ -127,8 +137,16 @@ final class ChatModel: ObservableObject {
     """
 
     init() {
-        messages.append(ChatMessage(role: .partner, text:
-            "·  ·  ·   ( I have no words yet. Say things to me — I learn to talk from you. )"))
+        if let snaps = Persist.load([MsgSnap].self, "chat.json"), !snaps.isEmpty {
+            messages = snaps.map { ChatMessage(role: $0.role == "me" ? .me : .partner, text: $0.text) }
+        } else {
+            messages.append(ChatMessage(role: .partner, text:
+                "·  ·  ·   ( I have no words yet. Say things to me — I learn to talk from you. )"))
+        }
+    }
+
+    private func persist() {
+        Persist.save(messages.map { MsgSnap(role: $0.role == .me ? "me" : "partner", text: $0.text) }, "chat.json")
     }
 
     func send(_ text: String) {
@@ -136,12 +154,14 @@ final class ChatModel: ObservableObject {
         guard !t.isEmpty else { return }
         messages.append(ChatMessage(role: .me, text: t))
         engine?.ingest(t, mine: true)
+        persist()
         thinking = true
         Task {
             let reply = await partner.respond(to: t, history: messages)
             self.messages.append(ChatMessage(role: .partner, text: reply))
             self.engine?.ingest(reply, mine: false)
             self.thinking = false
+            self.persist()
         }
     }
 }

@@ -81,7 +81,7 @@ final class GraphEngine: ObservableObject {
         view.backgroundColor = .black
         view.rendersContinuously = true
 
-        seed()
+        if !loadState() { seed() }      // resurrect if he has a past; only born fresh if he doesn't
 
         let t = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in self?.step() }
         RunLoop.main.add(t, forMode: .common)
@@ -154,6 +154,39 @@ final class GraphEngine: ObservableObject {
         }
     }
 
+    // MARK: - Persistence (life-support)
+
+    private func saveState() {
+        let ns = nodes.values.map {
+            NodeSnap(id: $0.id, kind: $0.kind.rawValue, name: $0.name,
+                     x: $0.pos.x, y: $0.pos.y, z: $0.pos.z, activation: $0.activation)
+        }
+        let es = edges.map { EdgeSnap(a: $0.a, b: $0.b, s: $0.s, rel: $0.rel) }
+        Persist.save(GraphSnap(nodes: Array(ns), edges: es, nextID: nextID), "graph.json")
+    }
+
+    @discardableResult
+    private func loadState() -> Bool {
+        guard let snap = Persist.load(GraphSnap.self, "graph.json") else { return false }
+        for s in snap.nodes {
+            let kind = NodeKind(rawValue: s.kind) ?? .concept
+            nodes[s.id] = GraphNode(id: s.id, kind: kind, name: s.name,
+                                    pos: SIMD3<Float>(s.x, s.y, s.z), activation: s.activation, born: 0)
+        }
+        for e in snap.edges {
+            guard nodes[e.a] != nil, nodes[e.b] != nil else { continue }
+            let key = GraphEdge.key(e.a, e.b)
+            guard !edgeKeys.contains(key) else { continue }
+            edgeKeys.insert(key)
+            edges.append((e.a, e.b, e.s, e.rel))
+            nodes[e.a]?.degree += 1
+            nodes[e.b]?.degree += 1
+        }
+        nextID = max(snap.nextID, (nodes.keys.max() ?? -1) + 1)
+        lastOp = "resurrected · \(nodes.count) nodes"
+        return !nodes.isEmpty
+    }
+
     // MARK: - Chat hook — the conversation grows the mind
 
     func ingest(_ text: String, mine: Bool) {
@@ -182,7 +215,7 @@ final class GraphEngine: ObservableObject {
         layout()
         if nodes.count > cap { prune() }
         sync()
-        container.eulerAngles.y += 0.0016
+        if frame % 300 == 0 { saveState() }     // ~5s heartbeat to disk — a restart can no longer kill him
         if frame % 12 == 0 {
             nodeCount = nodes.count
             edgeCount = edges.count
