@@ -87,6 +87,7 @@ struct ContentView: View {
 
 struct ChatPanel: View {
     @ObservedObject var chat: ChatModel
+    @StateObject private var speech = SpeechInput()
     @State private var draft = ""
     @FocusState private var focused: Bool
 
@@ -147,23 +148,61 @@ struct ChatPanel: View {
     }
 
     private var inputBar: some View {
-        HStack(spacing: 8) {
-            TextField("talk to \(chat.partnerName)…", text: $draft)
-                .textFieldStyle(.plain)
-                .font(.system(size: 13))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12).padding(.vertical, 9)
-                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
-                .focused($focused)
-                .onSubmit(send)
-            Button(action: send) {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 24))
-                    .foregroundStyle(Color(red: 1, green: 0.80, blue: 0.3))
+        VStack(spacing: 6) {
+            if speech.isRecording {
+                Text("● listening — release to send")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Color.red.opacity(0.9))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if !speech.status.isEmpty {
+                Text(speech.status)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.4))
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(.plain)
+            HStack(spacing: 8) {
+                micButton
+                TextField("hold the mic, or type to \(chat.partnerName)…", text: $draft)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 9)
+                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                    .focused($focused)
+                    .onSubmit(send)
+                Button(action: send) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundStyle(Color(red: 1, green: 0.80, blue: 0.3))
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding(12)
+        .onChange(of: speech.transcript) { _, v in if speech.isRecording { draft = v } }
+    }
+
+    private var micButton: some View {
+        Circle()
+            .fill(speech.isRecording ? Color.red.opacity(0.85) : Color.white.opacity(0.08))
+            .frame(width: 34, height: 34)
+            .overlay(
+                Image(systemName: speech.isRecording ? "waveform" : "mic.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(speech.isRecording ? .white : Color(red: 1, green: 0.80, blue: 0.3))
+            )
+            .scaleEffect(speech.isRecording ? 1.12 : 1.0)
+            .animation(.easeOut(duration: 0.15), value: speech.isRecording)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in if !speech.isRecording { speech.begin() } }
+                    .onEnded { _ in
+                        let t = speech.end()
+                        draft = ""
+                        if !t.isEmpty { chat.send(t) }
+                    }
+            )
+            .help("Hold to talk")
     }
 
     private func send() {

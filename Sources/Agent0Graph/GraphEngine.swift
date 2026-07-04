@@ -7,6 +7,8 @@ import AppKit
     SCNVector3(CGFloat(p.x), CGFloat(p.y), CGFloat(p.z))
 }
 
+private struct GridCell: Hashable { let x: Int32; let y: Int32; let z: Int32 }
+
 /// Owns the graph, the 3-D force layout, the stand-in growth process, the named labels,
 /// and the SceneKit sync. Chat feeds it via `ingest(_:mine:)` so the conversation visibly
 /// grows the mind. Every node and every edge is named.
@@ -32,11 +34,12 @@ final class GraphEngine: ObservableObject {
     private let edgeNode = SCNNode()
     private var timer: Timer?
 
-    // Bounds only the VISIBLE working set (for coherence + 60fps), not the mind — pruned nodes
-    // are consolidated to long-term memory, not deleted. Configurable via AGENT0_CAP.
+    // Uncapped by default — the visible graph grows without limit (grid layout keeps it O(n)).
+    // Set AGENT0_CAP to a finite number to bound the working set; overflow then consolidates
+    // to long-term memory instead of being deleted.
     private let workingSetCap: Int = {
         if let s = ProcessInfo.processInfo.environment["AGENT0_CAP"], let n = Int(s), n > 10 { return n }
-        return 500
+        return Int.max
     }()
     private let dt: Float = 0.02
     private let kRepel: Float = 5.5
@@ -313,21 +316,38 @@ final class GraphEngine: ObservableObject {
         let n = arr.count
         guard n > 0 else { return }
 
+        // Spatial-grid repulsion — O(n) instead of O(n²), so the graph can grow uncapped.
+        // Only nodes within the cutoff R repel; cell size = R means all such pairs live in the
+        // 3×3×3 neighbourhood, and each pair is applied once (j > i).
+        let R: Float = 4.0
+        let R2 = R * R
+        @inline(__always) func cellOf(_ p: SIMD3<Float>) -> GridCell {
+            GridCell(x: Int32((p.x / R).rounded(.down)),
+                     y: Int32((p.y / R).rounded(.down)),
+                     z: Int32((p.z / R).rounded(.down)))
+        }
+        var grid = [GridCell: [Int]](minimumCapacity: n)
+        for i in 0..<n { grid[cellOf(arr[i].pos), default: []].append(i) }
         for i in 0..<n {
             let a = arr[i]
-            for j in (i + 1)..<n {
-                let b = arr[j]
-                var d = a.pos - b.pos
-                var r2 = simd_length_squared(d)
-                if r2 < 0.0001 {
-                    d = SIMD3<Float>(.random(in: -0.1...0.1), .random(in: -0.1...0.1), .random(in: -0.1...0.1))
-                    r2 = simd_length_squared(d) + 0.0001
+            let c = cellOf(a.pos)
+            for dx in Int32(-1)...1 { for dy in Int32(-1)...1 { for dz in Int32(-1)...1 {
+                guard let bucket = grid[GridCell(x: c.x + dx, y: c.y + dy, z: c.z + dz)] else { continue }
+                for j in bucket where j > i {
+                    let b = arr[j]
+                    var d = a.pos - b.pos
+                    var r2 = simd_length_squared(d)
+                    if r2 > R2 { continue }
+                    if r2 < 0.0001 {
+                        d = SIMD3<Float>(.random(in: -0.1...0.1), .random(in: -0.1...0.1), .random(in: -0.1...0.1))
+                        r2 = simd_length_squared(d) + 0.0001
+                    }
+                    let dir = d / sqrt(r2)
+                    let f = kRepel / r2
+                    a.vel += dir * f * dt
+                    b.vel -= dir * f * dt
                 }
-                let dir = d / sqrt(r2)
-                let f = kRepel / r2
-                a.vel += dir * f * dt
-                b.vel -= dir * f * dt
-            }
+            }}}
         }
         for e in edges {
             guard let a = nodes[e.a], let b = nodes[e.b] else { continue }

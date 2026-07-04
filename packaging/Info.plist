@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>Agent0Graph</string>
+    <key>CFBundleDisplayName</key><string>Agent 0</string>
+    <key>CFBundleIdentifier</key><string>com.agent0.graph</string>
+    <key>CFBundleExecutable</key><string>Agent0Graph</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>0.1</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>NSMicrophoneUsageDescription</key><string>Agent 0 listens while you hold the talk button so you can speak to it.</string>
+    <key>NSSpeechRecognitionUsageDescription</key><string>Agent 0 turns your held-to-talk speech into text, on your device.</string>
+</dict>
+</plist>
