@@ -20,6 +20,31 @@ enum Persist {
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(T.self, from: data)
     }
+
+    /// Append one record as a line to a durable, unbounded ledger (the long-term memory that
+    /// DuckDB/Postgres read). Never rewrites — only grows. Nothing archived here is ever lost.
+    static func appendJSONL<T: Encodable>(_ value: T, _ name: String) {
+        let url = dir.appendingPathComponent(name)
+        guard var line = try? JSONEncoder().encode(value) else { return }
+        line.append(contentsOf: [0x0A])
+        if let h = try? FileHandle(forWritingTo: url) {
+            defer { try? h.close() }
+            _ = try? h.seekToEnd()
+            try? h.write(contentsOf: line)
+        } else {
+            try? line.write(to: url, options: .atomic)   // first write creates the file
+        }
+    }
+}
+
+/// A consolidated memory — a node that left the active working set and moved to long-term storage.
+struct MemoryRecord: Codable {
+    let id: Int
+    let kind: String
+    let name: String
+    let degree: Int
+    let neighbors: [String]
+    let archived_at_age: Int
 }
 
 // Serializable snapshots (SIMD/SCNNode aren't Codable, so we store plain fields).

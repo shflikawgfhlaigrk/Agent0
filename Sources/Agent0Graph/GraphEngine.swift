@@ -32,7 +32,12 @@ final class GraphEngine: ObservableObject {
     private let edgeNode = SCNNode()
     private var timer: Timer?
 
-    private let cap = 320
+    // Bounds only the VISIBLE working set (for coherence + 60fps), not the mind — pruned nodes
+    // are consolidated to long-term memory, not deleted. Configurable via AGENT0_CAP.
+    private let workingSetCap: Int = {
+        if let s = ProcessInfo.processInfo.environment["AGENT0_CAP"], let n = Int(s), n > 10 { return n }
+        return 500
+    }()
     private let dt: Float = 0.02
     private let kRepel: Float = 5.5
     private let kSpring: Float = 3.2
@@ -213,7 +218,7 @@ final class GraphEngine: ObservableObject {
         for n in nodes.values { n.activation *= 0.987 }
         for i in edges.indices { edges[i].s *= 0.997 }
         layout()
-        if nodes.count > cap { prune() }
+        if nodes.count > workingSetCap { prune() }
         sync()
         if frame % 300 == 0 { saveState() }     // ~5s heartbeat to disk — a restart can no longer kill him
         if frame % 12 == 0 {
@@ -274,9 +279,18 @@ final class GraphEngine: ObservableObject {
             let score = n.activation * 2.0 + Float(n.degree) * 0.4
             if score < worst { worst = score; worstID = n.id }
         }
-        guard worstID >= 0 else { return }
+        guard worstID >= 0, let n = nodes[worstID] else { return }
+        // consolidate to long-term memory BEFORE removing from the active graph — nothing is lost
+        let neighbors = edges
+            .filter { $0.a == worstID || $0.b == worstID }
+            .compactMap { nodes[$0.a == worstID ? $0.b : $0.a]?.name }
+        Persist.appendJSONL(
+            MemoryRecord(id: n.id, kind: String(describing: n.kind), name: n.name, degree: n.degree,
+                         neighbors: neighbors, archived_at_age: Int(Date().timeIntervalSince(startTime))),
+            "memory.jsonl")
+        let name = n.name
         removeNode(worstID)
-        lastOp = "ignore · prune"
+        lastOp = "consolidate · \(name) → memory"
     }
 
     private func removeNode(_ id: Int) {
