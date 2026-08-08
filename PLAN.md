@@ -1,6 +1,8 @@
 # Agent 0 — The Living Graph Mind
 
-**Status:** visualization built (this repo). Brain **not** built — this document maps it, then we stop.
+**Status:** visualization built. Phase-1 crash-only core built: append-only ledger, replay projection,
+IGNORE/TUNE/GROW tick operator, causal-law extraction, durable scaffold queue, concept suppression,
+route redirection, CLI tick/state/redirect/suppress probes, restart tests.
 **Thesis:** intelligence is not a frozen function you run data through. It is a continuous, growing,
 self-correcting *process*. This plan builds that process — no tokens, no frozen parameter blob at the
 center, no scheduler. It fires, it lives, it grows, it prunes, it improves.
@@ -148,11 +150,18 @@ Reasoning always lives in Agent 0's search-and-verify loop, never in a frozen we
 
 ## 7. STOP — before building the brain
 
-Built: the living 3-D graph (watch the shape of a growing mind; the operator's body, on placeholder data).
+Built: the living 3-D graph renderer plus the first real crash-only core. The app now writes every
+observation through an append-only event ledger and renders committed thought results, not random ambient
+growth. Bad routes are not deleted and the mind does not restart; repeated failed predictions append a
+`routeRedirected` correction, preserving good concepts/laws while removing the bad route from active replay.
+Bad low-signal concepts are handled the same way: a `conceptRedirected` correction preserves the event
+history but removes the concept from active replay.
+Growth also queues `scaffoldQueued` records: new concepts get grounding tasks, new laws get verification
+tasks, and failed routes get repair tasks. This is the first concrete "getting bigger" mechanism beyond
+visual graph growth.
 
-**Not built, by intent:** the operator T, the VSA world-model, the Postgres/DuckDB substrate, the brain
-runtime. The next decision gates everything: **the first world.** Point T at a stream it can *verify*
-(the house sensors / a synthetic world where "compression up, size bounded" is measurable in an
-afternoon) — purist and LLM-free — or demand open-world breadth and admit the summonable organ.
+**Still not built:** VSA/hypervector world-model, Postgres/DuckDB hippocampus, energy-settling,
+compression metric, sensor world, and verifier-driven self-rewrite. Next gate: make the operator prove
+prediction improvement in a synthetic world where compression up / size bounded is measurable.
 
 That choice is yours. Everything downstream hangs on it.

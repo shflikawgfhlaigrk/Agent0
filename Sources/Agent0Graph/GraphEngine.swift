@@ -1,3 +1,4 @@
+import Agent0Core
 import SwiftUI
 import SceneKit
 import simd
@@ -9,9 +10,8 @@ import AppKit
 
 private struct GridCell: Hashable { let x: Int32; let y: Int32; let z: Int32 }
 
-/// Owns the graph, the 3-D force layout, the stand-in growth process, the named labels,
-/// and the SceneKit sync. Chat feeds it via `ingest(_:mine:)` so the conversation visibly
-/// grows the mind. Every node and every edge is named.
+/// Owns the 3-D projection of committed ledger facts. Chat appends thoughts through
+/// `Agent0Brain`; this view only renders replayable cognition.
 final class GraphEngine: ObservableObject {
     @Published var nodeCount = 0
     @Published var edgeCount = 0
@@ -21,6 +21,7 @@ final class GraphEngine: ObservableObject {
     private var nodes: [Int: GraphNode] = [:]
     private var edges: [(a: Int, b: Int, s: Float, rel: String)] = []
     private var edgeKeys = Set<Int64>()
+    private var nameIndex: [String: Int] = [:]
     private var nextID = 0
     private var frame = 0
     private let startTime = Date()
@@ -34,12 +35,11 @@ final class GraphEngine: ObservableObject {
     private let edgeNode = SCNNode()
     private var timer: Timer?
 
-    // Uncapped by default — the visible graph grows without limit (grid layout keeps it O(n)).
-    // Set AGENT0_CAP to a finite number to bound the working set; overflow then consolidates
-    // to long-term memory instead of being deleted.
+    // Renderer cap only. The actual mind is the append-only core ledger; this SceneKit graph is
+    // a bounded working view so visuals cannot burn the machine as cognition grows.
     private let workingSetCap: Int = {
         if let s = ProcessInfo.processInfo.environment["AGENT0_CAP"], let n = Int(s), n > 10 { return n }
-        return Int.max
+        return 500
     }()
     private let dt: Float = 0.02
     private let kRepel: Float = 5.5
@@ -48,13 +48,6 @@ final class GraphEngine: ObservableObject {
     private let kCenter: Float = 0.55
     private let damping: Float = 0.86
     private let maxSpeed: Float = 6.0
-
-    // Name pools — so ambient growth is always named, never "node 47".
-    private static let conceptWords = ["lattice","echo","drift","ember","vector","fold","signal","bloom","phase","weave","spiral","current","facet","strand","prism","cascade","axis","field","glyph","cipher","helix","quanta","umbra","vertex","aura","flux","tide","kernel","braid","meridian"]
-    private static let perceptWords = ["light","motion","sound","warmth","step","voice","door","shadow","hum","touch","glow","chill","breath","tone","flicker"]
-    private static let lawWords = ["if-then","tends-to","precedes","conserves","mirrors","decays","attracts","repels","recurs","balances"]
-    private static let goalWords = ["seek","hold","reach","protect","learn","reduce","reveal","sustain","align","find"]
-    private static let tensionWords = ["mismatch","gap","paradox","surprise","conflict","void","riddle","anomaly","dissonance","unknown"]
 
     // MARK: - Setup
 
@@ -90,6 +83,7 @@ final class GraphEngine: ObservableObject {
         view.rendersContinuously = true
 
         if !loadState() { seed() }      // resurrect if he has a past; only born fresh if he doesn't
+        bootstrapCoreLedger()
 
         let t = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in self?.step() }
         RunLoop.main.add(t, forMode: .common)
@@ -122,8 +116,23 @@ final class GraphEngine: ObservableObject {
         let n = GraphNode(id: nextID, kind: kind, name: name, pos: base + jitter + spread,
                           activation: activation, born: Date().timeIntervalSince(startTime))
         nodes[nextID] = n
+        nameIndex[indexKey(kind, name)] = nextID
         nextID += 1
         return n
+    }
+
+    private func indexKey(_ kind: NodeKind, _ name: String) -> String {
+        "\(kind.rawValue):\(name.lowercased())"
+    }
+
+    @discardableResult
+    private func ensureNode(kind: NodeKind, name: String, near: SIMD3<Float>? = nil, activation: Float = 1.0) -> GraphNode {
+        let clean = String(name.prefix(32))
+        if let id = nameIndex[indexKey(kind, clean)], let existing = nodes[id] {
+            existing.activation = min(existing.activation + activation, 2.2)
+            return existing
+        }
+        return makeNode(kind: kind, near: near, activation: activation, name: clean)
     }
 
     private func addEdge(_ a: Int, _ b: Int, _ s: Float, rel: String) {
@@ -136,15 +145,12 @@ final class GraphEngine: ObservableObject {
         nodes[b]?.degree += 1
     }
 
-    private func pooledName(_ k: NodeKind) -> String {
-        switch k {
-        case .core:    return "core"
-        case .percept: return Self.perceptWords.randomElement()!
-        case .concept: return Self.conceptWords.randomElement()!
-        case .law:     return Self.lawWords.randomElement()!
-        case .goal:    return Self.goalWords.randomElement()!
-        case .tension: return Self.tensionWords.randomElement()!
-        }
+    private func removeVisibleNodes(named name: String, except kindToKeep: NodeKind? = nil) {
+        let target = name.lowercased()
+        let ids = nodes.values
+            .filter { $0.name.lowercased() == target && $0.kind != kindToKeep }
+            .map(\.id)
+        for id in ids { removeNode(id) }
     }
 
     private func relation(_ from: NodeKind, _ to: NodeKind) -> String {
@@ -176,10 +182,16 @@ final class GraphEngine: ObservableObject {
     @discardableResult
     private func loadState() -> Bool {
         guard let snap = Persist.load(GraphSnap.self, "graph.json") else { return false }
+        let hasCommittedThoughts = snap.nodes.contains { $0.name.hasPrefix("tick-") }
+        guard hasCommittedThoughts || snap.nodes.count <= 8 else {
+            lastOp = "ignored legacy random graph"
+            return false
+        }
         for s in snap.nodes {
             let kind = NodeKind(rawValue: s.kind) ?? .concept
             nodes[s.id] = GraphNode(id: s.id, kind: kind, name: s.name,
                                     pos: SIMD3<Float>(s.x, s.y, s.z), activation: s.activation, born: 0)
+            nameIndex[indexKey(kind, s.name)] = s.id
         }
         for e in snap.edges {
             guard nodes[e.a] != nil, nodes[e.b] != nil else { continue }
@@ -195,31 +207,107 @@ final class GraphEngine: ObservableObject {
         return !nodes.isEmpty
     }
 
-    // MARK: - Chat hook — the conversation grows the mind
+    private func bootstrapCoreLedger() {
+        do {
+            let coreURL = Persist.dir.appendingPathComponent("core", isDirectory: true)
+            let state = try Agent0Brain(directory: coreURL).state()
+            guard state.tick > 0 else { return }
 
-    func ingest(_ text: String, mine: Bool) {
-        let token = text
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .first(where: { $0.count > 2 })?
-            .lowercased() ?? (mine ? "you" : "zero")
-        let kind: NodeKind = mine ? .percept : .concept
-        let parent = nodes.values.max(by: { $0.activation < $1.activation })
-        let n = makeNode(kind: kind, near: parent?.pos, activation: 1.5, name: String(token.prefix(14)))
-        if let p = parent { addEdge(p.id, n.id, 1.0, rel: mine ? "said" : "answered") }
-        if text.count > 22 {
-            let c = makeNode(kind: .concept, near: n.pos, activation: 1.0, name: pooledName(.concept))
-            addEdge(n.id, c.id, 0.8, rel: "abstracts-to")
+            let core = ensureNode(kind: .core, name: "self", near: .zero, activation: 1.2)
+            let tick = ensureNode(kind: .percept, name: "tick-\(state.tick)", near: core.pos, activation: 1.4)
+            addEdge(core.id, tick.id, 1.0, rel: "remembers")
+
+            for concept in state.concepts.values.sorted(by: { $0.firstSeq < $1.firstSeq }) {
+                let node = ensureNode(kind: .concept, name: concept.name, near: tick.pos, activation: min(1.8, 0.8 + Float(concept.seen) * 0.2))
+                addEdge(tick.id, node.id, 0.9, rel: "has-concept")
+            }
+
+            for law in state.laws.values.sorted(by: { $0.key < $1.key }) {
+                let src = ensureNode(kind: .concept, name: law.source, near: tick.pos, activation: 1.0)
+                let dst = ensureNode(kind: .concept, name: law.target, near: src.pos, activation: 1.0)
+                let lawNode = ensureNode(kind: .law, name: law.key, near: src.pos, activation: Float(law.confidence))
+                addEdge(src.id, lawNode.id, Float(law.confidence), rel: "predicts")
+                addEdge(lawNode.id, dst.id, Float(law.confidence), rel: "expects")
+            }
+
+            for scaffold in state.scaffolds.values.sorted(by: { $0.createdSeq < $1.createdSeq }) {
+                let goal = ensureNode(kind: .goal, name: scaffold.kind, near: tick.pos, activation: scaffold.status == "materialized" ? 1.3 : 1.6)
+                let target = ensureNode(kind: .concept, name: scaffold.target, near: goal.pos, activation: 0.9)
+                addEdge(tick.id, goal.id, 0.9, rel: scaffold.status)
+                addEdge(goal.id, target.id, 0.8, rel: "targets")
+            }
+
+            for redirect in state.redirectedConcepts.values.sorted(by: { $0.createdSeq < $1.createdSeq }) {
+                removeVisibleNodes(named: redirect.concept, except: .tension)
+                let tension = ensureNode(kind: .tension, name: "suppress \(redirect.concept)", near: tick.pos, activation: 1.2)
+                addEdge(tick.id, tension.id, 0.8, rel: "redirects")
+            }
+
+            for redirect in state.redirectedRoutes.values.sorted(by: { $0.createdSeq < $1.createdSeq }) {
+                removeVisibleNodes(named: redirect.lawKey, except: .tension)
+                let tension = ensureNode(kind: .tension, name: "redirect \(redirect.lawKey)", near: tick.pos, activation: 1.4)
+                addEdge(tick.id, tension.id, 1.0, rel: "redirects")
+            }
+
+            for unresolved in state.unresolvedTensions {
+                let tension = ensureNode(kind: .tension, name: unresolved, near: tick.pos, activation: 1.2)
+                addEdge(tick.id, tension.id, 0.8, rel: "unresolved")
+            }
+
+            lastOp = "ledger replay · ticks \(state.tick)"
+            saveState()
+        } catch {
+            lastOp = "ledger replay fault"
         }
-        lastOp = mine ? "grow · you '\(n.name)'" : "grow · zero '\(n.name)'"
+    }
+
+    func apply(_ thought: ThoughtResult) {
+        let core = ensureNode(kind: .core, name: "self", near: .zero, activation: 1.1)
+        let tick = ensureNode(kind: .percept, name: "tick-\(thought.tick)", near: core.pos, activation: 1.4)
+        addEdge(core.id, tick.id, 1.0, rel: "thinks")
+
+        for concept in thought.concepts {
+            let kind: NodeKind = thought.newConcepts.contains(concept) ? .concept : .percept
+            let node = ensureNode(kind: kind, name: concept, near: tick.pos, activation: thought.newConcepts.contains(concept) ? 1.2 : 0.8)
+            addEdge(tick.id, node.id, 0.9, rel: thought.newConcepts.contains(concept) ? "grows" : "sees")
+        }
+
+        for law in thought.newLaws + thought.tunedLaws {
+            let src = ensureNode(kind: .concept, name: law.source, near: tick.pos, activation: 1.0)
+            let dst = ensureNode(kind: .concept, name: law.target, near: src.pos, activation: 1.0)
+            let lawNode = ensureNode(kind: .law, name: "\(law.source)->\(law.target)", near: src.pos, activation: 1.5)
+            addEdge(src.id, lawNode.id, Float(law.confidence), rel: "predicts")
+            addEdge(lawNode.id, dst.id, Float(law.confidence), rel: "expects")
+        }
+
+        for miss in thought.unmetPredictions {
+            let tension = ensureNode(kind: .tension, name: "missing \(miss)", near: tick.pos, activation: 1.4)
+            addEdge(tick.id, tension.id, Float(thought.predictionError), rel: "surprises")
+        }
+
+        for redirect in thought.redirectedRoutes {
+            let node = ensureNode(kind: .tension, name: "redirect \(redirect.lawKey)", near: tick.pos, activation: 1.8)
+            addEdge(tick.id, node.id, 1.0, rel: "redirects")
+        }
+
+        for scaffold in thought.scaffolds {
+            let node = ensureNode(kind: .goal, name: scaffold.kind, near: tick.pos, activation: 1.6)
+            let target = ensureNode(kind: .concept, name: scaffold.target, near: node.pos, activation: 1.1)
+            addEdge(tick.id, node.id, 1.0, rel: "scaffolds")
+            addEdge(node.id, target.id, 0.8, rel: "targets")
+        }
+
+        let decision = ensureNode(kind: .goal, name: thought.decision.rawValue, near: tick.pos, activation: Float(thought.confidence))
+        addEdge(tick.id, decision.id, Float(thought.confidence), rel: "decides")
+        lastOp = "\(thought.decision.rawValue) · surprise \(String(format: "%.2f", thought.predictionError))"
+        saveState()
     }
 
     // MARK: - Per-frame tick
 
     private func step() {
         frame += 1
-        if frame % 22 == 0 { growthOp() }
         for n in nodes.values { n.activation *= 0.987 }
-        for i in edges.indices { edges[i].s *= 0.997 }
         layout()
         if nodes.count > workingSetCap { prune() }
         sync()
@@ -228,50 +316,6 @@ final class GraphEngine: ObservableObject {
             nodeCount = nodes.count
             edgeCount = edges.count
             ageSeconds = Int(Date().timeIntervalSince(startTime))
-        }
-    }
-
-    // MARK: - IGNORE / TUNE / GROW
-
-    private func growthOp() {
-        let roll = Float.random(in: 0...1)
-        if roll < 0.06 || nodes.isEmpty {
-            makeNode(kind: .percept, near: nil, activation: 1.0, name: pooledName(.percept))
-            lastOp = "grow · new region"
-            return
-        }
-        let arr = Array(nodes.values)
-        let total = arr.reduce(Float(0)) { $0 + max($1.activation, 0.02) }
-        var r = Float.random(in: 0...total)
-        var src = arr[0]
-        for n in arr { r -= max(n.activation, 0.02); if r <= 0 { src = n; break } }
-
-        if roll < 0.78 {
-            let kind = childKind(of: src.kind)
-            let child = makeNode(kind: kind, near: src.pos, activation: 1.0, name: pooledName(kind))
-            addEdge(src.id, child.id, 0.9, rel: relation(src.kind, kind))
-            if Float.random(in: 0...1) < 0.5, let other = arr.randomElement(), other.id != src.id {
-                addEdge(child.id, other.id, 0.5, rel: relation(kind, other.kind))
-            }
-            src.activation = min(src.activation + 0.15, 1.4)
-            lastOp = "grow · \(child.name)"
-        } else {
-            src.activation = min(src.activation + 0.6, 1.6)
-            if let idx = edges.indices.filter({ edges[$0].a == src.id || edges[$0].b == src.id }).randomElement() {
-                edges[idx].s = min(edges[idx].s + 0.3, 1.5)
-            }
-            lastOp = "tune · \(src.name)"
-        }
-    }
-
-    private func childKind(of k: NodeKind) -> NodeKind {
-        switch k {
-        case .core:    return [.concept, .goal, .percept].randomElement()!
-        case .percept: return Float.random(in: 0...1) < 0.6 ? .concept : .tension
-        case .concept: return [.law, .goal, .concept].randomElement()!
-        case .law:     return Float.random(in: 0...1) < 0.5 ? .goal : .concept
-        case .goal:    return Float.random(in: 0...1) < 0.5 ? .tension : .concept
-        case .tension: return .concept
         }
     }
 
@@ -297,6 +341,7 @@ final class GraphEngine: ObservableObject {
     }
 
     private func removeNode(_ id: Int) {
+        let removed = nodes[id]
         nodes[id] = nil
         edges.removeAll { e in
             guard e.a == id || e.b == id else { return false }
@@ -307,6 +352,7 @@ final class GraphEngine: ObservableObject {
         }
         if let sn = scnNodes[id] { sn.removeFromParentNode(); scnNodes[id] = nil }
         if let ln = nodeLabels[id] { ln.removeFromParentNode(); nodeLabels[id] = nil }
+        if let n = removed { nameIndex[indexKey(n.kind, n.name)] = nil }
     }
 
     // MARK: - Layout
